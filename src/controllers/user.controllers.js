@@ -3,6 +3,26 @@ import {ApiError} from "../utils/ApiError.js"
 import {User} from "../models/user.model.js"
 import {uploadOnCloudinary} from "../utils/cloudinary.js"
 import { ApiResponse } from "../utils/ApiResponse.js"
+import cookieParser from "cookie-parser"
+
+
+ // method to generate access and refesh tokens 
+ const generateAccessAndRefreshTokens = async(userId)=>{
+    try{
+        const user = await User.findById(userId)
+        const accessToken = user.generateAccessToken()
+        const refreshToken = user.generateRefreshToken()
+
+        // add refesh and access token to db 
+        user.refeshToken = refreshToken
+       await user.save({validateBeforeSave: false})
+        
+       return {accessToken, refreshToken}
+    }
+    catch (error){
+        throw new ApiError(500, "Something went wrong while generating access and refresh token")
+    }
+}
 
 
 const registerUser = asyncHandler(async (req,res)=>{
@@ -19,14 +39,15 @@ const registerUser = asyncHandler(async (req,res)=>{
     console.log("email", email)
 
     if(
-        [fullName, email, username, password].some((field) => field?.trim()=== "")  // alternate way to check if for each field
+        [fullName, email, username, password].some((field) => field?.trim()=== "")  // alternate way to check if for each field yeh har field ko trim krege aur agar empty nikla to true hoga aur error throw hoga uss case main 
     ){
         throw new ApiError(400, "all fields are required")
     }
 
-    // check for user exists
-    const existedUser = User.findOne({
-        $or: [{ username }, { email }]
+    // check for user exists : findOne find krta hai ek ko return kr deta hai 
+    const existedUser = await  User.findOne({
+        $or: [{ username }, { email }] 
+        // $or use hota hai check krne k liye hum more than one k liye bi check kr shkte hai 
     })
 
     if(existedUser){
@@ -58,7 +79,7 @@ const registerUser = asyncHandler(async (req,res)=>{
         username:username.toLowerCase()
     })
 
-    const createdUser = await User.findById(user_.id).select(
+    const createdUser = await User.findById(user._id).select(
         // .select main pass hota hai ek string aur waha de select karna hota hai kyuki intially sb selected hote hai
         "-password -refreshToken"
     )
@@ -72,4 +93,86 @@ const registerUser = asyncHandler(async (req,res)=>{
     )
 })
 
-export {registerUser}
+// making login user controller 
+const loginUser = asyncHandler(async (req,res)=>{
+    //  check whether user exist or not 
+    // full name and password req 
+    // take data from body 
+    // access and refresh token 
+    // send cookie
+    
+    const {email, username, password} = req.body;
+
+    if(!(username || email)){
+        throw new ApiError(400, "username or email is required")
+    } 
+
+    // find user if it exists from database 
+    const user = await User.findOne({
+        $or:[{username},{email}]
+    })
+
+    if(!user) {
+        throw new ApiError(404, "user does not exist, Error 404")
+    }
+
+    const isPasswordValid = await user.isPasswordCorrect(password)
+
+    if(!isPasswordValid){
+        throw new ApiError(401, "Invalid user credentials")
+    }
+    const {accessToken, refreshToken} = await generateAccessAndRefreshTokens(user._id)
+    const loggedInUser = await User.findById(user._id).select("-password -refreshToken")
+
+    // cookies
+    const options = {
+        httpOnly:true,
+        secure: true,
+        sameSite:'Strict'
+    }
+
+    return res.status(200)
+    .cookie("accessToken", accessToken,options)
+    .cookie("refreshToken", refreshToken, options)
+    .json(
+        new ApiResponse(200, {
+            user: loggedInUser, accessToken, refreshToken
+        },"User loggedIn successfully !")
+    )
+
+})
+
+// log out method 
+
+const logoutUser = asyncHandler(async(req, res)=>{
+    // clear cookies 
+    // reset refresh token 
+   await User.findByIdAndUpdate(
+        req.user_.id,{
+            $set:{
+                refreshToken : undefined
+            },
+            
+        } ,
+        {
+            new:true
+        }
+    )
+
+    const options = {
+        httpOnly:true,
+        secure: true
+
+    }
+    return res.status(200).clearCookie("accessToken",options)
+    .clearCookie("refreshToken",options)
+    .json(
+        new ApiResponse(200,{},"User logged out successfully")
+    )
+})
+
+
+export {registerUser, 
+    loginUser,
+    logoutUser
+}
